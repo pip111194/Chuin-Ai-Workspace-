@@ -8,24 +8,19 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-// =====================
-// AUTH MODELS (Auth.js compatible)
-// =====================
-
 model User {
-  id            String    @id @default(cuid())
-  email         String    @unique
-  name          String?
-  emailVerified DateTime?
-  image         String?
+  id             String         @id @default(cuid())
+  email          String         @unique
+  name           String?
+  emailVerified  DateTime?
+  image          String?
   hashedPassword String?
-
-  accounts     Account[]
-  sessions     Session[]
-  conversations Conversation[]
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  accounts       Account[]
+  sessions       Session[]
+  conversations  Conversation[]
+  projects       Project[]
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
 
   @@map("users")
 }
@@ -43,8 +38,7 @@ model Account {
   scope             String?
   id_token          String? @db.Text
   session_state     String?
-
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user              User    @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([provider, providerAccountId])
   @@map("accounts")
@@ -55,8 +49,7 @@ model Session {
   sessionToken String   @unique
   userId       String
   expires      DateTime
-
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@map("sessions")
 }
@@ -70,35 +63,56 @@ model VerificationToken {
   @@map("verification_tokens")
 }
 
-// =====================
-// CHUIN CHAT MODELS
-// =====================
-
 model Conversation {
-  id     String @id @default(cuid())
-  userId String
-  title  String @default("New Chat")
-
-  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-  messages Message[]
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id        String    @id @default(cuid())
+  userId    String?
+  title     String    @default("New Chat")
+  user      User?     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  messages  Message[]
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
 
   @@index([userId, updatedAt])
   @@map("conversations")
 }
 
 model Message {
-  id             String @id @default(cuid())
+  id             String       @id @default(cuid())
   conversationId String
-  role           String // "user" | "assistant" | "system"
-  content        String @db.Text
-
-  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
-
-  createdAt DateTime @default(now())
+  role           String
+  content        String       @db.Text
+  attachments    Attachment[]
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  createdAt      DateTime     @default(now())
 
   @@index([conversationId, createdAt])
   @@map("messages")
+}
+
+model Attachment {
+  id        String   @id @default(cuid())
+  messageId String?
+  name      String
+  size      Int
+  mimeType  String
+  content   String   @db.Text
+  message   Message? @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+
+  @@index([messageId])
+  @@map("attachments")
+}
+
+model Project {
+  id          String   @id @default(cuid())
+  userId      String?
+  name        String
+  description String?  @db.Text
+  status      String   @default("active")
+  user        User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([userId, updatedAt])
+  @@map("projects")
 }
