@@ -1,4 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
+import { getServerSession } from "next-auth";
+import { authOptions } from "@/lib/auth/config";
 import { prisma } from "@/lib/prisma";
 
 export async function GET(
@@ -6,13 +8,18 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const session = await getServerSession(authOptions);
+    const userId = session?.user?.id;
     const { id } = await params;
-    const conversation = await prisma.conversation.findUnique({
-      where: { id },
+
+    if (!userId) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
+    const conversation = await prisma.conversation.findFirst({
+      where: { id, userId },
       include: {
-        messages: {
-          orderBy: { createdAt: "asc" },
-        },
+        messages: { orderBy: { createdAt: "asc" } },
       },
     });
 
@@ -45,14 +52,28 @@ export async function PATCH(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const session = await getServerSession(authOptions);
+    const userId = session?.user?.id;
     const { id } = await params;
     const body = await req.json();
     const { title } = body;
 
+    if (!userId) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
     if (!title || typeof title !== "string" || !title.trim()) {
+      return NextResponse.json({ error: "Title is required" }, { status: 400 });
+    }
+
+    const existing = await prisma.conversation.findFirst({
+      where: { id, userId },
+    });
+
+    if (!existing) {
       return NextResponse.json(
-        { error: "Title is required" },
-        { status: 400 }
+        { error: "Conversation not found" },
+        { status: 404 }
       );
     }
 
@@ -76,7 +97,25 @@ export async function DELETE(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const session = await getServerSession(authOptions);
+    const userId = session?.user?.id;
     const { id } = await params;
+
+    if (!userId) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
+    const existing = await prisma.conversation.findFirst({
+      where: { id, userId },
+    });
+
+    if (!existing) {
+      return NextResponse.json(
+        { error: "Conversation not found" },
+        { status: 404 }
+      );
+    }
+
     await prisma.conversation.delete({ where: { id } });
     return NextResponse.json({ success: true });
   } catch (error) {

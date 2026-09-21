@@ -91,4 +91,4 @@ export const FREE_MODELS: AIModel[] = [
   },
 ];
 
-export const DEFAULT_MODEL = FREE_MODELS[1].id; // nemotron by default
+export const DEFAULT_MODEL = "nvidia/nemotron-3.5-lightning:free"; // nemotron by default

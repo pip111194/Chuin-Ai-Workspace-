@@ -50,8 +50,6 @@ export default function ChatPage() {
 
   const { messages, append, isLoading, error, stop, setMessages } = useChat({
     api: "/api/chat",
-    experimental_throttle: 80,
-    body: { model: selectedModel },
     onFinish: async (message) => {
       const convId = conversationIdRef.current;
       if (!convId || !message.content) return;
@@ -183,14 +181,33 @@ export default function ChatPage() {
     let currentConvId = conversationId;
     if (!currentConvId) {
       try {
+        // Generate a meaningful title in parallel (non-blocking)
+        let title = (userMessage || currentPendingFiles[0]?.name || "New Chat")
+          .trim()
+          .slice(0, 40);
+
+        try {
+          const titleRes = await fetch("/api/generate-title", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              message: userMessage || currentPendingFiles[0]?.name || "New Chat",
+            }),
+          });
+          if (titleRes.ok) {
+            const titleData = await titleRes.json();
+            if (titleData.title) {
+              title = titleData.title;
+            }
+          }
+        } catch (titleErr) {
+          console.error("Title generation failed (using fallback):", titleErr);
+        }
+
         const res = await fetch("/api/conversations", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            title: (userMessage || currentPendingFiles[0]?.name || "New Chat")
-              .trim()
-              .slice(0, 40),
-          }),
+          body: JSON.stringify({ title }),
         });
         const data = await res.json();
         if (data.conversation?.id) {

@@ -1,9 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
+import { getServerSession } from "next-auth";
+import { authOptions } from "@/lib/auth/config";
 import { prisma } from "@/lib/prisma";
 
 export async function GET() {
   try {
+    const session = await getServerSession(authOptions);
+    const userId = session?.user?.id;
+
     const conversations = await prisma.conversation.findMany({
+      where: userId ? { userId } : { id: "__none__" },
       orderBy: { updatedAt: "desc" },
       take: 50,
       select: {
@@ -25,12 +31,23 @@ export async function GET() {
 
 export async function POST(req: NextRequest) {
   try {
+    const session = await getServerSession(authOptions);
+    const userId = session?.user?.id;
+
+    if (!userId) {
+      return NextResponse.json(
+        { error: "Unauthorized" },
+        { status: 401 }
+      );
+    }
+
     const body = await req.json();
     const { title } = body;
 
     const conversation = await prisma.conversation.create({
       data: {
         title: title?.trim() || "New Chat",
+        userId,
       },
     });
 
