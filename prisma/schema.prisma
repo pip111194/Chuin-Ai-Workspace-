@@ -19,6 +19,7 @@ model User {
   sessions       Session[]
   conversations  Conversation[]
   projects       Project[]
+  agentTasks     AgentTask[]
   createdAt      DateTime       @default(now())
   updatedAt      DateTime       @updatedAt
 
@@ -115,4 +116,102 @@ model Project {
 
   @@index([userId, updatedAt])
   @@map("projects")
+}
+
+// =====================
+// PHASE 3: AGENT SYSTEM
+// =====================
+
+model AgentTask {
+  id             String   @id @default(cuid())
+  userId         String
+  conversationId String?
+  goal           String   @db.Text
+  status         String   @default("CREATED")
+  plan           Json?
+  metadata       Json?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  startedAt      DateTime?
+  completedAt    DateTime?
+
+  user      User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  runs      AgentRun[]
+  events    AgentEvent[]
+
+  @@index([userId, status])
+  @@index([conversationId])
+  @@map("agent_tasks")
+}
+
+model AgentRun {
+  id          String   @id @default(cuid())
+  taskId      String
+  agentType   String   @default("general")
+  status      String   @default("PENDING")
+  currentStep Int      @default(0)
+  createdAt   DateTime @default(now())
+  startedAt   DateTime?
+  completedAt DateTime?
+  metadata    Json?
+
+  task   AgentTask   @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  steps  AgentStep[]
+  events AgentEvent[]
+
+  @@index([taskId, status])
+  @@map("agent_runs")
+}
+
+model AgentStep {
+  id          String   @id @default(cuid())
+  runId       String
+  stepNumber  Int
+  type        String
+  description String   @db.Text
+  status      String   @default("PENDING")
+  input       Json?
+  output      Json?
+  error       String?  @db.Text
+  createdAt   DateTime @default(now())
+  completedAt DateTime?
+
+  run       AgentRun   @relation(fields: [runId], references: [id], onDelete: Cascade)
+  toolCalls ToolCall[]
+
+  @@index([runId, stepNumber])
+  @@map("agent_steps")
+}
+
+model ToolCall {
+  id         String   @id @default(cuid())
+  stepId     String
+  toolName   String
+  input      Json
+  output     Json?
+  status     String   @default("PENDING")
+  error      String?  @db.Text
+  durationMs Int?
+  createdAt  DateTime @default(now())
+  completedAt DateTime?
+
+  step AgentStep @relation(fields: [stepId], references: [id], onDelete: Cascade)
+
+  @@index([stepId])
+  @@map("tool_calls")
+}
+
+model AgentEvent {
+  id        String   @id @default(cuid())
+  taskId    String
+  runId     String?
+  type      String
+  payload   Json
+  createdAt DateTime @default(now())
+
+  task AgentTask @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  run  AgentRun? @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@index([taskId, createdAt])
+  @@map("agent_events")
 }
