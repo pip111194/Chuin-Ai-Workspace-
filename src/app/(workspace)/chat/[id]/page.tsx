@@ -1,8 +1,25 @@
 "use client";
 
 import { useChat } from "@ai-sdk/react";
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, memo, useMemo } from "react";
 import { useParams } from "next/navigation";
+import { MarkdownRenderer } from "@/components/chat/markdown-renderer";
+import { ModelPicker } from "@/components/chat/model-picker";
+import { DEFAULT_MODEL } from "@/lib/models";
+
+const MemoizedUserMessage = memo(function MemoizedUserMessage({
+  content,
+}: {
+  content: string;
+}) {
+  return (
+    <div className="flex justify-end w-full">
+      <div className="max-w-[85%] min-w-0 whitespace-pre-wrap break-words rounded-2xl rounded-br-sm bg-neutral-900 px-4 py-3 text-sm text-white">
+        {content}
+      </div>
+    </div>
+  );
+});
 
 interface PendingFile {
   id: string;
@@ -17,26 +34,33 @@ export default function ChatPage() {
   const isNew = urlId === "new";
 
   const [input, setInput] = useState("");
+  const [selectedModel, setSelectedModel] = useState<string>(DEFAULT_MODEL);
   const [conversationId, setConversationId] = useState<string | null>(
     isNew ? null : urlId
   );
+  const conversationIdRef = useRef<string | null>(isNew ? null : urlId);
   const [historyLoaded, setHistoryLoaded] = useState(false);
   const [pendingFiles, setPendingFiles] = useState<PendingFile[]>([]);
   const [uploading, setUploading] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const userScrolledRef = useRef<boolean>(false);
 
   const { messages, append, isLoading, error, stop, setMessages } = useChat({
     api: "/api/chat",
+    experimental_throttle: 80,
+    body: { model: selectedModel },
     onFinish: async (message) => {
-      if (!conversationId) return;
+      const convId = conversationIdRef.current;
+      if (!convId || !message.content) return;
       try {
         await fetch("/api/messages", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            conversationId,
+            conversationId: convId,
             role: "assistant",
             content: message.content,
           }),
@@ -52,11 +76,11 @@ export default function ChatPage() {
     fetch(`/api/conversations/${urlId}`)
       .then((r) => r.json())
       .then((data) => {
-        if (data.messages && setMessages) {
+        if (data.messages && Array.isArray(data.messages) && setMessages) {
           setMessages(
             data.messages.map((m: any) => ({
               id: m.id,
-              role: m.role,
+              role: m.role as "user" | "assistant",
               content: m.content,
             }))
           );
@@ -67,36 +91,59 @@ export default function ChatPage() {
   }, [urlId, isNew, historyLoaded, setMessages]);
 
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
+    conversationIdRef.current = conversationId;
+  }, [conversationId]);
 
   useEffect(() => {
-    if (textareaRef.current) {
-      textareaRef.current.style.height = "auto";
-      textareaRef.current.style.height =
-        Math.min(textareaRef.current.scrollHeight, 200) + "px";
-    }
+    if (userScrolledRef.current) return;
+    const id = requestAnimationFrame(() => {
+      messagesEndRef.current?.scrollIntoView({ behavior: "auto", block: "end" });
+    });
+    return () => cancelAnimationFrame(id);
+  }, [messages.length]);
+
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    let timeout: NodeJS.Timeout;
+    const handleScroll = () => {
+      clearTimeout(timeout);
+      timeout = setTimeout(() => {
+        const d = el.scrollHeight - el.scrollTop - el.clientHeight;
+        userScrolledRef.current = d > 150;
+      }, 50);
+    };
+    el.addEventListener("scroll", handleScroll, { passive: true });
+    return () => {
+      el.removeEventListener("scroll", handleScroll);
+      clearTimeout(timeout);
+    };
+  }, []);
+
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    const id = requestAnimationFrame(() => {
+      el.style.height = "auto";
+      el.style.height = Math.min(el.scrollHeight, 200) + "px";
+    });
+    return () => cancelAnimationFrame(id);
   }, [input]);
 
   const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (!files || files.length === 0) return;
-
     setUploading(true);
     const uploaded: PendingFile[] = [];
-
     for (const file of Array.from(files)) {
       try {
         const formData = new FormData();
         formData.append("file", file);
-
         const res = await fetch("/api/attachments", {
           method: "POST",
           body: formData,
         });
-
         if (!res.ok) throw new Error("Upload failed");
-
         const data = await res.json();
         uploaded.push(data.attachment);
       } catch (err) {
@@ -104,13 +151,9 @@ export default function ChatPage() {
         alert(`Failed to upload ${file.name}`);
       }
     }
-
     setPendingFiles((prev) => [...prev, ...uploaded]);
     setUploading(false);
-
-    if (fileInputRef.current) {
-      fileInputRef.current.value = "";
-    }
+    if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
   const removePendingFile = (id: string) => {
@@ -126,25 +169,18 @@ export default function ChatPage() {
   const handleSend = async () => {
     if ((!input.trim() && pendingFiles.length === 0) || isLoading || uploading)
       return;
-
     const userMessage = input.trim();
     setInput("");
-
     let finalContent = userMessage;
     if (pendingFiles.length > 0) {
-      const fileList = pendingFiles
-        .map((f) => `📎 ${f.name}`)
-        .join("\n");
+      const fileList = pendingFiles.map((f) => `📎 ${f.name}`).join("\n");
       finalContent = userMessage
         ? `${userMessage}\n\n[Attached files:]\n${fileList}`
         : `[Attached files:]\n${fileList}`;
     }
-
     const currentPendingFiles = [...pendingFiles];
     setPendingFiles([]);
-
     let currentConvId = conversationId;
-
     if (!currentConvId) {
       try {
         const res = await fetch("/api/conversations", {
@@ -166,7 +202,6 @@ export default function ChatPage() {
         console.error("Failed to create conversation:", e);
       }
     }
-
     if (currentConvId) {
       try {
         await fetch("/api/messages", {
@@ -182,88 +217,76 @@ export default function ChatPage() {
         console.error("Failed to save user message:", e);
       }
     }
-
     append({ role: "user", content: finalContent });
   };
 
-  const handleNewChat = () => {
-    window.location.href = "/chat/new";
-  };
+  const renderedMessages = useMemo(() => {
+    return messages.map((m, idx) => (
+      <div key={m.id}>
+        {m.role === "user" ? (
+          <MemoizedUserMessage content={m.content} />
+        ) : (
+          <div className="flex justify-start w-full">
+            <div className="max-w-[85%] min-w-0 text-neutral-900">
+              <MarkdownRenderer
+                content={m.content}
+                isStreaming={isLoading && idx === messages.length - 1}
+              />
+            </div>
+          </div>
+        )}
+      </div>
+    ));
+  }, [messages, isLoading]);
 
   return (
-    <div className="flex h-full flex-col bg-neutral-50">
-      <div className="flex-1 overflow-y-auto">
-        <div className="mx-auto max-w-3xl space-y-6 px-4 py-6">
-          {messages.length === 0 && (
-            <div className="flex min-h-[60vh] flex-col items-center justify-center text-center">
-              <h1 className="text-3xl font-semibold tracking-tight text-neutral-900">
-                Chuin AI Workspace
-              </h1>
-              <p className="mt-2 text-sm text-neutral-500">
-                Build. Explore. Create. Iterate.
-              </p>
-
-              <div className="mt-8 grid w-full max-w-md grid-cols-2 gap-2">
-                {[
-                  { label: "Build a website", icon: "🌐" },
-                  { label: "Create an app", icon: "📱" },
-                  { label: "Explain code", icon: "💡" },
-                  { label: "Debug a project", icon: "🔧" },
-                ].map((item) => (
-                  <button
-                    key={item.label}
-                    onClick={() => setInput(item.label)}
-                    className="flex items-center gap-2 rounded-xl border border-neutral-200 bg-white px-4 py-3 text-left text-sm text-neutral-700 transition-all hover:border-neutral-300 hover:shadow-sm"
-                  >
-                    <span>{item.icon}</span>
-                    <span>{item.label}</span>
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {messages.map((m) => (
-            <div key={m.id}>
-              {m.role === "user" ? (
-                <div className="flex justify-end">
-                  <div className="max-w-[85%] whitespace-pre-wrap rounded-2xl rounded-br-sm bg-neutral-900 px-4 py-3 text-sm text-white">
-                    {m.content}
-                  </div>
-                </div>
-              ) : (
-                <div className="flex justify-start">
-                  <div className="max-w-[85%] whitespace-pre-wrap text-sm leading-relaxed text-neutral-900">
-                    {m.content}
-                  </div>
-                </div>
-              )}
-            </div>
-          ))}
-
-          {error && (
-            <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
-              Error: {error.message}
-            </div>
-          )}
-
-          {isLoading && (
-            <div className="flex items-center gap-2">
-              <div className="flex gap-1">
-                <div className="h-1.5 w-1.5 animate-pulse rounded-full bg-neutral-400" />
-                <div className="h-1.5 w-1.5 animate-pulse rounded-full bg-neutral-400" style={{ animationDelay: "150ms" }} />
-                <div className="h-1.5 w-1.5 animate-pulse rounded-full bg-neutral-400" style={{ animationDelay: "300ms" }} />
-              </div>
-              <span className="text-xs text-neutral-500">Chuin is thinking</span>
-              <button onClick={stop} className="ml-2 text-xs text-neutral-500 underline hover:text-neutral-900">
-                Stop
-              </button>
-            </div>
-          )}
-
-          <div ref={messagesEndRef} />
+    <div className="flex h-full min-h-0 flex-col bg-neutral-50">
+      {messages.length === 0 ? (
+        <div className="flex flex-1 flex-col items-center justify-center px-6">
+          <h1 className="text-center text-4xl font-semibold tracking-tight text-neutral-900 sm:text-5xl">
+            Chuin AI
+          </h1>
         </div>
-      </div>
+      ) : (
+        <div
+          ref={scrollRef}
+          className="flex-1 overflow-y-auto overflow-x-hidden min-h-0 overscroll-contain"
+        >
+          <div className="mx-auto max-w-3xl space-y-6 px-4 py-6 w-full">
+            {renderedMessages}
+            {error && (
+              <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+                Error: {error.message}
+              </div>
+            )}
+            {isLoading && (
+              <div className="flex items-center gap-2">
+                <div className="flex gap-1">
+                  <div className="h-1.5 w-1.5 animate-pulse rounded-full bg-neutral-400" />
+                  <div
+                    className="h-1.5 w-1.5 animate-pulse rounded-full bg-neutral-400"
+                    style={{ animationDelay: "150ms" }}
+                  />
+                  <div
+                    className="h-1.5 w-1.5 animate-pulse rounded-full bg-neutral-400"
+                    style={{ animationDelay: "300ms" }}
+                  />
+                </div>
+                <span className="text-xs text-neutral-500">
+                  Chuin is thinking
+                </span>
+                <button
+                  onClick={stop}
+                  className="ml-2 text-xs text-neutral-500 underline hover:text-neutral-900"
+                >
+                  Stop
+                </button>
+              </div>
+            )}
+            <div ref={messagesEndRef} />
+          </div>
+        </div>
+      )}
 
       <div className="shrink-0 border-t border-neutral-200 bg-neutral-50 px-4 pb-4 pt-3">
         <form
@@ -271,9 +294,9 @@ export default function ChatPage() {
             e.preventDefault();
             handleSend();
           }}
-          className="mx-auto max-w-3xl"
+          className=""
         >
-          <div className="glass rounded-2xl border border-neutral-200 bg-white/80 p-3 shadow-sm backdrop-blur-xl transition-shadow focus-within:border-neutral-300 focus-within:shadow-md">
+          <div className="glass mx-auto max-w-3xl rounded-3xl border border-white/60 bg-white/70 p-4 shadow-lg backdrop-blur-2xl transition-all focus-within:border-neutral-300 focus-within:bg-white/85 focus-within:shadow-xl">
             {pendingFiles.length > 0 && (
               <div className="mb-2 flex flex-wrap gap-2">
                 {pendingFiles.map((file) => (
@@ -281,19 +304,19 @@ export default function ChatPage() {
                     key={file.id}
                     className="flex items-center gap-2 rounded-lg border border-neutral-200 bg-neutral-50 px-3 py-1.5 text-xs"
                   >
-                    <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-neutral-500">
-                      <path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z" />
-                      <polyline points="14 2 14 8 20 8" />
-                    </svg>
-                    <span className="max-w-[120px] truncate text-neutral-700">{file.name}</span>
-                    <span className="text-neutral-400">{formatSize(file.size)}</span>
+                    <span className="max-w-[120px] truncate text-neutral-700">
+                      {file.name}
+                    </span>
+                    <span className="text-neutral-400">
+                      {formatSize(file.size)}
+                    </span>
                     <button
                       type="button"
                       onClick={() => removePendingFile(file.id)}
-                      className="text-neutral-400 hover:text-neutral-900"
+                      className="rounded p-0.5 text-neutral-400 transition-colors hover:bg-neutral-200 hover:text-neutral-900"
                       aria-label="Remove file"
                     >
-                      <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                         <path d="M18 6 6 18" />
                         <path d="m6 6 12 12" />
                       </svg>
@@ -320,6 +343,11 @@ export default function ChatPage() {
             />
             <div className="mt-2 flex items-center justify-between">
               <div className="flex items-center gap-1">
+                <ModelPicker
+                  selectedModel={selectedModel}
+                  onSelect={setSelectedModel}
+                  disabled={isLoading}
+                />
                 <input
                   ref={fileInputRef}
                   type="file"
@@ -331,7 +359,7 @@ export default function ChatPage() {
                   type="button"
                   onClick={() => fileInputRef.current?.click()}
                   disabled={uploading || isLoading}
-                  className="rounded-lg p-2 text-neutral-500 transition-colors hover:bg-neutral-100 hover:text-neutral-900 disabled:opacity-40"
+                  className="group flex h-9 w-9 items-center justify-center rounded-full bg-gradient-to-b from-white to-neutral-100 text-neutral-600 shadow-[0_2px_8px_rgba(0,0,0,0.08),inset_0_1px_1px_rgba(255,255,255,1),inset_0_-1px_2px_rgba(0,0,0,0.05)] transition-all hover:from-white hover:to-neutral-50 hover:text-neutral-900 hover:shadow-[0_4px_12px_rgba(0,0,0,0.12),inset_0_1px_1px_rgba(255,255,255,1),inset_0_-1px_2px_rgba(0,0,0,0.06)] active:scale-95 active:shadow-[0_1px_3px_rgba(0,0,0,0.1),inset_0_1px_2px_rgba(0,0,0,0.06)] disabled:opacity-40"
                   aria-label="Attach file"
                 >
                   {uploading ? (
@@ -340,19 +368,24 @@ export default function ChatPage() {
                     </svg>
                   ) : (
                     <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                      <path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48" />
+                      <path d="M5 12h14" />
+                      <path d="M12 5v14" />
                     </svg>
                   )}
                 </button>
               </div>
               <button
                 type="submit"
-                disabled={(!input.trim() && pendingFiles.length === 0) || isLoading || uploading}
+                disabled={
+                  (!input.trim() && pendingFiles.length === 0) ||
+                  isLoading ||
+                  uploading
+                }
                 className="flex h-9 w-9 items-center justify-center rounded-full bg-neutral-900 text-white transition-all hover:bg-neutral-800 disabled:cursor-not-allowed disabled:bg-neutral-300 disabled:text-neutral-500"
-                aria-label="Send message"
+                aria-label={isLoading ? "Stop" : "Send message"}
               >
                 {isLoading ? (
-                  <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
                     <rect x="6" y="6" width="12" height="12" rx="2" />
                   </svg>
                 ) : (
